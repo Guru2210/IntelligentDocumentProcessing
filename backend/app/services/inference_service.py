@@ -23,6 +23,7 @@ def run_extraction(
     field_names: List[str],
     field_types: Optional[Dict[str, str]] = None,
     field_columns: Optional[Dict[str, List[str]]] = None,
+    field_metadata: Optional[Dict[str, Any]] = None,
     output_format: str = "json",
     page_range: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -53,7 +54,8 @@ def run_extraction(
             pages, 
             field_names, 
             field_types=field_types or {},
-            field_columns=field_columns or {}
+            field_columns=field_columns or {},
+            field_metadata=field_metadata or {},
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

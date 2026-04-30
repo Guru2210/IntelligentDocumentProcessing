@@ -63,7 +63,9 @@ function AddFieldModal({ project, onClose, onCreated }) {
   const [name, setName] = useState('')
   const [fieldType, setFieldType] = useState('text')
   const [dataType, setDataType] = useState('string')
-  const [columns, setColumns] = useState([{ column_name: '', data_type: 'string' }])
+  const [columns, setColumns] = useState([{ column_name: '', data_type: 'string', row_level: 0 }])
+  const [tableMode, setTableMode] = useState('normal')
+  const [rowsPerRecord, setRowsPerRecord] = useState(1)
   const [loading, setLoading] = useState(false)
   const colorIdx = (project.fields?.length || 0) % FIELD_COLORS.length
 
@@ -78,6 +80,8 @@ function AddFieldModal({ project, onClose, onCreated }) {
         data_type: dataType,
         color: FIELD_COLORS[colorIdx],
         columns: fieldType === 'table' ? columns.filter(c => c.column_name.trim()).map((c, i) => ({ ...c, order: i })) : [],
+        table_mode: fieldType === 'table' ? tableMode : 'normal',
+        rows_per_record: fieldType === 'table' && tableMode === 'advanced' ? rowsPerRecord : 1,
       })
       toast.success(`Field "${field.name}" added`)
       onCreated(field)
@@ -89,7 +93,7 @@ function AddFieldModal({ project, onClose, onCreated }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 460, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 520, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
         <div className="modal-header" style={{ flexShrink: 0 }}>
           <h3>Add Field</h3>
           <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={16} /></button>
@@ -118,23 +122,71 @@ function AddFieldModal({ project, onClose, onCreated }) {
               )}
             </div>
             {fieldType === 'table' && (
-              <div className="form-group">
-                <label className="form-label">Table Columns</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {columns.map((col, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 6 }}>
-                      <input className="input" value={col.column_name} onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, column_name: e.target.value } : c))} placeholder={`Column ${i + 1} name`} />
-                      <select className="input select" style={{ width: 130 }} value={col.data_type} onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, data_type: e.target.value } : c))}>
-                        {DATA_TYPES.map(dt => <option key={dt} value={dt}>{dt}</option>)}
-                      </select>
-                      <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => setColumns(prev => prev.filter((_, ci) => ci !== i))}><X size={14} /></button>
-                    </div>
-                  ))}
-                  <button type="button" className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => setColumns(prev => [...prev, { column_name: '', data_type: 'string' }])}>
-                    <Plus size={13} /> Add Column
-                  </button>
+              <>
+                {/* Table Mode Toggle */}
+                <div className="form-group">
+                  <label className="form-label">Table Mode</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button type="button" className={`btn btn-sm ${tableMode === 'normal' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => { setTableMode('normal'); setRowsPerRecord(1); setColumns(prev => prev.map(c => ({ ...c, row_level: 0 }))) }}>
+                      Normal Table
+                    </button>
+                    <button type="button" className={`btn btn-sm ${tableMode === 'advanced' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => { setTableMode('advanced'); setRowsPerRecord(prev => prev < 2 ? 3 : prev) }}>
+                      ⚡ Advanced Tagging
+                    </button>
+                  </div>
+                  {tableMode === 'advanced' && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--accent-bright)', marginTop: 4, display: 'block' }}>
+                      Multi-row records: each logical record spans multiple physical rows.
+                    </span>
+                  )}
                 </div>
-              </div>
+
+                {/* Rows per Record (advanced only) */}
+                {tableMode === 'advanced' && (
+                  <div className="form-group">
+                    <label className="form-label">Rows per Record</label>
+                    <input type="number" className="input" style={{ width: 100 }} value={rowsPerRecord}
+                      onChange={e => setRowsPerRecord(Math.max(2, parseInt(e.target.value) || 2))} min={2} max={10} />
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2, display: 'block' }}>
+                      How many physical rows make one logical record.
+                    </span>
+                  </div>
+                )}
+
+                {/* Table Columns */}
+                <div className="form-group">
+                  <label className="form-label">Table Columns</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {columns.map((col, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input className="input" style={{ flex: 1 }} value={col.column_name}
+                          onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, column_name: e.target.value } : c))}
+                          placeholder={`Column ${i + 1} name`} />
+                        <select className="input select" style={{ width: 100 }} value={col.data_type}
+                          onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, data_type: e.target.value } : c))}>
+                          {DATA_TYPES.map(dt => <option key={dt} value={dt}>{dt}</option>)}
+                        </select>
+                        {tableMode === 'advanced' && (
+                          <select className="input select" style={{ width: 80 }} value={col.row_level}
+                            onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, row_level: parseInt(e.target.value) } : c))}>
+                            {Array.from({ length: rowsPerRecord }, (_, r) => (
+                              <option key={r} value={r}>Row {r + 1}</option>
+                            ))}
+                          </select>
+                        )}
+                        <button type="button" className="btn btn-ghost btn-icon btn-sm"
+                          onClick={() => setColumns(prev => prev.filter((_, ci) => ci !== i))}><X size={14} /></button>
+                      </div>
+                    ))}
+                    <button type="button" className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-start' }}
+                      onClick={() => setColumns(prev => [...prev, { column_name: '', data_type: 'string', row_level: 0 }])}>
+                      <Plus size={13} /> Add Column
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
           <div className="modal-footer" style={{ flexShrink: 0 }}>
@@ -156,9 +208,11 @@ function EditFieldModal({ project, field, onClose, onUpdated }) {
   const [dataType, setDataType] = useState(field.data_type || 'string')
   const [columns, setColumns] = useState(
     field.columns?.length
-      ? field.columns.map(c => ({ column_name: c.column_name, data_type: c.data_type || 'string' }))
-      : [{ column_name: '', data_type: 'string' }]
+      ? field.columns.map(c => ({ column_name: c.column_name, data_type: c.data_type || 'string', row_level: c.row_level || 0 }))
+      : [{ column_name: '', data_type: 'string', row_level: 0 }]
   )
+  const [tableMode, setTableMode] = useState(field.table_mode || 'normal')
+  const [rowsPerRecord, setRowsPerRecord] = useState(field.rows_per_record || 1)
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e) => {
@@ -174,6 +228,8 @@ function EditFieldModal({ project, field, onClose, onUpdated }) {
         columns: fieldType === 'table'
           ? columns.filter(c => c.column_name.trim()).map((c, i) => ({ ...c, order: i }))
           : [],
+        table_mode: fieldType === 'table' ? tableMode : 'normal',
+        rows_per_record: fieldType === 'table' && tableMode === 'advanced' ? rowsPerRecord : 1,
       })
       toast.success(`Field "${updated.name}" updated`)
       onUpdated(updated)
@@ -185,7 +241,7 @@ function EditFieldModal({ project, field, onClose, onUpdated }) {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 460, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 520, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
         <div className="modal-header" style={{ flexShrink: 0 }}>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ width: 12, height: 12, borderRadius: '50%', background: field.color, display: 'inline-block' }} />
@@ -217,24 +273,72 @@ function EditFieldModal({ project, field, onClose, onUpdated }) {
               )}
             </div>
             {fieldType === 'table' && (
-              <div className="form-group">
-                <label className="form-label">Table Columns</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {columns.map((col, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
-                      <input className="input" value={col.column_name} onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, column_name: e.target.value } : c))} placeholder={`Column ${i + 1} name`} />
-                      <select className="input select" style={{ width: 130 }} value={col.data_type} onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, data_type: e.target.value } : c))}>
-                        {DATA_TYPES.map(dt => <option key={dt} value={dt}>{dt}</option>)}
-                      </select>
-                      <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => setColumns(prev => prev.filter((_, ci) => ci !== i))}><X size={14} /></button>
-                    </div>
-                  ))}
-                  <button type="button" className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => setColumns(prev => [...prev, { column_name: '', data_type: 'string' }])}>
-                    <Plus size={13} /> Add Column
-                  </button>
+              <>
+                {/* Table Mode Toggle */}
+                <div className="form-group">
+                  <label className="form-label">Table Mode</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button type="button" className={`btn btn-sm ${tableMode === 'normal' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => { setTableMode('normal'); setRowsPerRecord(1); setColumns(prev => prev.map(c => ({ ...c, row_level: 0 }))) }}>
+                      Normal Table
+                    </button>
+                    <button type="button" className={`btn btn-sm ${tableMode === 'advanced' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => { setTableMode('advanced'); setRowsPerRecord(prev => prev < 2 ? 3 : prev) }}>
+                      ⚡ Advanced Tagging
+                    </button>
+                  </div>
+                  {tableMode === 'advanced' && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--accent-bright)', marginTop: 4, display: 'block' }}>
+                      Multi-row records: each logical record spans multiple physical rows.
+                    </span>
+                  )}
                 </div>
-              </div>
+
+                {/* Rows per Record (advanced only) */}
+                {tableMode === 'advanced' && (
+                  <div className="form-group">
+                    <label className="form-label">Rows per Record</label>
+                    <input type="number" className="input" style={{ width: 100 }} value={rowsPerRecord}
+                      onChange={e => setRowsPerRecord(Math.max(2, parseInt(e.target.value) || 2))} min={2} max={10} />
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2, display: 'block' }}>
+                      How many physical rows make one logical record.
+                    </span>
+                  </div>
+                )}
+
+                {/* Table Columns */}
+                <div className="form-group">
+                  <label className="form-label">Table Columns</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {columns.map((col, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', minWidth: 18, textAlign: 'right' }}>{i + 1}.</span>
+                        <input className="input" style={{ flex: 1 }} value={col.column_name}
+                          onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, column_name: e.target.value } : c))}
+                          placeholder={`Column ${i + 1} name`} />
+                        <select className="input select" style={{ width: 100 }} value={col.data_type}
+                          onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, data_type: e.target.value } : c))}>
+                          {DATA_TYPES.map(dt => <option key={dt} value={dt}>{dt}</option>)}
+                        </select>
+                        {tableMode === 'advanced' && (
+                          <select className="input select" style={{ width: 80 }} value={col.row_level}
+                            onChange={e => setColumns(prev => prev.map((c, ci) => ci === i ? { ...c, row_level: parseInt(e.target.value) } : c))}>
+                            {Array.from({ length: rowsPerRecord }, (_, r) => (
+                              <option key={r} value={r}>Row {r + 1}</option>
+                            ))}
+                          </select>
+                        )}
+                        <button type="button" className="btn btn-ghost btn-icon btn-sm"
+                          onClick={() => setColumns(prev => prev.filter((_, ci) => ci !== i))}><X size={14} /></button>
+                      </div>
+                    ))}
+                    <button type="button" className="btn btn-secondary btn-sm" style={{ alignSelf: 'flex-start' }}
+                      onClick={() => setColumns(prev => [...prev, { column_name: '', data_type: 'string', row_level: 0 }])}>
+                      <Plus size={13} /> Add Column
+                    </button>
+                  </div>
+                </div>
+              </>
             )}
           </div>
           <div className="modal-footer" style={{ flexShrink: 0 }}>
@@ -248,6 +352,7 @@ function EditFieldModal({ project, field, onClose, onUpdated }) {
     </div>
   )
 }
+
 
 // ==================== Main Label Studio ====================
 export default function LabelStudio() {
@@ -333,9 +438,19 @@ export default function LabelStudio() {
   useEffect(() => { tableCursorRef.current = tableCursor }, [tableCursor])
 
   // Cursor derived values (computed here so JSX stays simple)
-  const activeFieldCols = (activeField?.columns || []).slice().sort((a, b) => a.order - b.order)
+  const isAdvancedTable = activeField?.table_mode === 'advanced'
+  const activeFieldCols = (activeField?.columns || []).slice().sort((a, b) => {
+    if (isAdvancedTable) {
+      const rA = a.row_level || 0
+      const rB = b.row_level || 0
+      if (rA !== rB) return rA - rB
+    }
+    return a.order - b.order
+  })
   const cursorActive = !!(tableCursor && activeField && tableCursor.fieldId === activeField.id)
-  const currentColName = cursorActive ? activeFieldCols[tableCursor.col]?.column_name : null
+  const currentCol = cursorActive ? activeFieldCols[tableCursor.col] : null
+  const currentColName = currentCol ? currentCol.column_name : null
+  const currentRowLevel = currentCol ? (currentCol.row_level || 0) : 0
 
   // Auto-zoom to fit container
   useEffect(() => {
@@ -512,7 +627,20 @@ export default function LabelStudio() {
   const assignWithCursor = (wordIds, text, bboxes) => {
     const cursor = tableCursorRef.current
     if (!cursor || !activeField) return false
-    const cols = (activeField.columns || []).slice().sort((a, b) => a.order - b.order)
+    
+    // We can just use the globally sorted activeFieldCols here to avoid repeating logic
+    // but we need them derived locally to ensure there are no closure scope issues.
+    // However, since react renders, `activeField` in scope might be stale if derived from state directly? No, `activeField` is from render. But since this is a callback, it will capture `activeFieldCols`!
+    const isAdv = activeField.table_mode === 'advanced'
+    const cols = (activeField.columns || []).slice().sort((a, b) => {
+      if (isAdv) {
+        const rA = a.row_level || 0;
+        const rB = b.row_level || 0;
+        if (rA !== rB) return rA - rB;
+      }
+      return a.order - b.order;
+    })
+    
     if (cols.length === 0) return false
     const colName = cols[cursor.col]?.column_name
     if (!colName) return false
@@ -542,12 +670,19 @@ export default function LabelStudio() {
         const newCursor = { ...cursor, col: nextCol }
         tableCursorRef.current = newCursor
         setTableCursor(newCursor)
-        toast.success(`✓ ${colName}  →  ${cols[nextCol].column_name}`, { duration: 900, icon: '▶' })
+        
+        const nextRl = cols[nextCol].row_level || 0
+        const currRl = cols[cursor.col].row_level || 0
+        if (isAdv && nextRl !== currRl) {
+          toast.success(`✓ ${colName}  →  Row ${nextRl + 1}: ${cols[nextCol].column_name}`, { duration: 1200, icon: '↘' })
+        } else {
+          toast.success(`✓ ${colName}  →  ${cols[nextCol].column_name}`, { duration: 900, icon: '▶' })
+        }
       } else {
         const newCursor = { ...cursor, row: cursor.row + 1, col: 0 }
         tableCursorRef.current = newCursor
         setTableCursor(newCursor)
-        toast.success(`Row ${cursor.row + 1} done  —  Row ${cursor.row + 2} start`, { duration: 1000, icon: '↩' })
+        toast.success(`Record ${cursor.row + 1} done  —  Record ${cursor.row + 2} start`, { duration: 1000, icon: '↩' })
       }
     } else {
       tableCursorRef.current = null
@@ -1162,9 +1297,9 @@ export default function LabelStudio() {
                   {/* Cursor status pill */}
                   {cursorActive ? (
                     <div style={{ background: `${activeField.color}22`, border: `1px solid ${activeField.color}55`, borderRadius: 6, padding: '6px 10px' }}>
-                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 2 }}>Labeling cursor</div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 2 }}>Labeling cursor {isAdvancedTable && '(Advanced)'}</div>
                       <div style={{ fontWeight: 700, fontSize: '0.82rem', color: activeField.color }}>
-                        Row {tableCursor.row + 1}  ›  {currentColName || '—'}
+                        {isAdvancedTable ? `Record ${tableCursor.row + 1} › Row ${currentRowLevel + 1}` : `Row ${tableCursor.row + 1}`}  ›  {currentColName || '—'}
                       </div>
                       <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2 }}>
                         Col {tableCursor.col + 1} / {activeFieldCols.length}  ·  click or drag words to assign

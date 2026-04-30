@@ -16,6 +16,7 @@ class FieldColumnCreate(BaseModel):
     column_name: str
     data_type: DataType = DataType.string
     order: int = 0
+    row_level: int = 0
 
 class FieldCreate(BaseModel):
     name: str
@@ -24,6 +25,8 @@ class FieldCreate(BaseModel):
     is_required: bool = False
     color: str = "#3B82F6"
     columns: List[FieldColumnCreate] = []
+    table_mode: str = "normal"
+    rows_per_record: int = 1
 
 class ProjectCreate(BaseModel):
     name: str
@@ -36,6 +39,7 @@ class FieldColumnOut(BaseModel):
     column_name: str
     data_type: str
     order: int
+    row_level: int = 0
     class Config:
         from_attributes = True
 
@@ -48,6 +52,8 @@ class FieldOut(BaseModel):
     order: int
     color: str
     columns: List[FieldColumnOut] = []
+    table_mode: str = "normal"
+    rows_per_record: int = 1
     class Config:
         from_attributes = True
 
@@ -235,6 +241,8 @@ def add_field(project_id: str, data: FieldCreate, db: Session = Depends(get_db))
         is_required=data.is_required,
         color=data.color,
         order=order,
+        table_mode=data.table_mode if data.field_type == FieldType.table else "normal",
+        rows_per_record=data.rows_per_record if data.field_type == FieldType.table else 1,
     )
     db.add(field)
     db.flush()
@@ -244,6 +252,7 @@ def add_field(project_id: str, data: FieldCreate, db: Session = Depends(get_db))
             column_name=col.column_name,
             data_type=col.data_type,
             order=col.order or i,
+            row_level=col.row_level,
         )
         db.add(fc)
     db.commit()
@@ -261,6 +270,8 @@ def update_field(project_id: str, field_id: str, data: FieldCreate, db: Session 
     field.data_type = data.data_type
     field.is_required = data.is_required
     field.color = data.color
+    field.table_mode = data.table_mode if data.field_type == FieldType.table else "normal"
+    field.rows_per_record = data.rows_per_record if data.field_type == FieldType.table else 1
 
     # Rebuild columns
     for old_col in field.columns:
@@ -272,6 +283,7 @@ def update_field(project_id: str, field_id: str, data: FieldCreate, db: Session 
             column_name=col.column_name,
             data_type=col.data_type,
             order=col.order or i,
+            row_level=col.row_level,
         )
         db.add(fc)
     db.commit()
@@ -311,5 +323,7 @@ def _field_to_out(f: Field) -> FieldOut:
         is_required=f.is_required,
         order=f.order,
         color=f.color,
-        columns=[FieldColumnOut(id=str(c.id), column_name=c.column_name, data_type=c.data_type, order=c.order) for c in f.columns],
+        table_mode=f.table_mode or "normal",
+        rows_per_record=f.rows_per_record or 1,
+        columns=[FieldColumnOut(id=str(c.id), column_name=c.column_name, data_type=c.data_type, order=c.order, row_level=c.row_level or 0) for c in f.columns],
     )

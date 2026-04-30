@@ -306,9 +306,14 @@ def _compute_column_boundaries(project_id: str, labeled_doc_ids: list, log_callb
         for f in fields:
             if "table" in str(f.field_type).lower() and f.columns:
                 cols = sorted(f.columns, key=lambda c: c.order)
+                table_mode = getattr(f, 'table_mode', 'normal') or 'normal'
+                rows_per_record = getattr(f, 'rows_per_record', 1) or 1
                 table_fields[str(f.id)] = {
                     "name": f.name,
                     "columns": [c.column_name for c in cols],
+                    "table_mode": table_mode,
+                    "rows_per_record": rows_per_record,
+                    "col_row_levels": {c.column_name: (getattr(c, 'row_level', 0) or 0) for c in cols},
                 }
         return table_fields
 
@@ -356,32 +361,76 @@ def _compute_column_boundaries(project_id: str, labeled_doc_ids: list, log_callb
         if not col_positions:
             continue
 
-        # Compute median X-center for each column
-        col_centers = []
-        for col_name in field_info["columns"]:
-            positions = col_positions.get(col_name, [])
-            if positions:
-                median_x = float(np.median(positions))
-                col_centers.append((col_name, median_x))
+        table_mode = field_info.get("table_mode", "normal")
 
-        if len(col_centers) < 2:
-            continue
+        if table_mode == "advanced":
+            # ── Advanced table: compute boundaries PER ROW LEVEL ──
+            col_row_levels = field_info["col_row_levels"]
+            rows_per_record = field_info["rows_per_record"]
 
-        # Sort by X position (left to right)
-        col_centers.sort(key=lambda x: x[1])
-        sorted_col_names = [c[0] for c in col_centers]
-        sorted_centers = [c[1] for c in col_centers]
+            # Group columns by row_level
+            row_level_cols = defaultdict(list)
+            for col_name in field_info["columns"]:
+                rl = col_row_levels.get(col_name, 0)
+                row_level_cols[rl].append(col_name)
 
-        # Boundaries = midpoints between adjacent column centers
-        boundaries = []
-        for i in range(len(sorted_centers) - 1):
-            boundaries.append((sorted_centers[i] + sorted_centers[i + 1]) / 2.0)
+            row_levels_result = {}
+            for rl in sorted(row_level_cols.keys()):
+                rl_cols = row_level_cols[rl]
+                col_centers = []
+                for col_name in rl_cols:
+                    positions = col_positions.get(col_name, [])
+                    if positions:
+                        median_x = float(np.median(positions))
+                        col_centers.append((col_name, median_x))
 
-        result[field_info["name"]] = {
-            "columns": sorted_col_names,
-            "boundaries": boundaries,
-        }
-        log(f"  {field_info['name']}: {len(sorted_col_names)} columns, boundaries: {[f'{b:.3f}' for b in boundaries]}")
+                if len(col_centers) < 1:
+                    continue
+
+                col_centers.sort(key=lambda x: x[1])
+                sorted_col_names = [c[0] for c in col_centers]
+                sorted_centers = [c[1] for c in col_centers]
+
+                boundaries = []
+                for i in range(len(sorted_centers) - 1):
+                    boundaries.append((sorted_centers[i] + sorted_centers[i + 1]) / 2.0)
+
+                row_levels_result[str(rl)] = {
+                    "columns": sorted_col_names,
+                    "boundaries": boundaries,
+                }
+
+            result[field_info["name"]] = {
+                "table_mode": "advanced",
+                "rows_per_record": rows_per_record,
+                "row_levels": row_levels_result,
+            }
+            log(f"  {field_info['name']} (advanced, {rows_per_record} rows/record): {len(row_levels_result)} row levels")
+        else:
+            # ── Normal table: existing logic unchanged ──
+            col_centers = []
+            for col_name in field_info["columns"]:
+                positions = col_positions.get(col_name, [])
+                if positions:
+                    median_x = float(np.median(positions))
+                    col_centers.append((col_name, median_x))
+
+            if len(col_centers) < 2:
+                continue
+
+            col_centers.sort(key=lambda x: x[1])
+            sorted_col_names = [c[0] for c in col_centers]
+            sorted_centers = [c[1] for c in col_centers]
+
+            boundaries = []
+            for i in range(len(sorted_centers) - 1):
+                boundaries.append((sorted_centers[i] + sorted_centers[i + 1]) / 2.0)
+
+            result[field_info["name"]] = {
+                "columns": sorted_col_names,
+                "boundaries": boundaries,
+            }
+            log(f"  {field_info['name']}: {len(sorted_col_names)} columns, boundaries: {[f'{b:.3f}' for b in boundaries]}")
 
     return result
 
@@ -632,3 +681,9 @@ class _LazyTask:
 
 
 run_training_job = _LazyTask()
+
+# Force task registration if running in Celery worker
+try:
+    run_training_job._get_task()
+except Exception:
+    pass

@@ -62,6 +62,8 @@ class Field(Base):
     is_required = Column(Boolean, default=False)
     order = Column(Integer, default=0)
     color = Column(String(20), default="#3B82F6")
+    table_mode = Column(String(20), default="normal")   # "normal" or "advanced"
+    rows_per_record = Column(Integer, default=1)         # physical rows per logical record
     created_at = Column(DateTime, default=datetime.utcnow)
 
     project = relationship("Project", back_populates="fields")
@@ -77,5 +79,6 @@ class FieldColumn(Base):
     column_name = Column(String(255), nullable=False)
     data_type = Column(SAEnum(DataType), default=DataType.string)
     order = Column(Integer, default=0)
+    row_level = Column(Integer, default=0)               # sub-row within a record (advanced tables)
 
     field = relationship("Field", back_populates="columns")

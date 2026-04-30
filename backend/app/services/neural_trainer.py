@@ -317,6 +317,7 @@ def run_neural_inference(
     field_names: List[str],
     field_types: Optional[Dict[str, str]] = None,
     field_columns: Optional[Dict[str, List[str]]] = None,
+    field_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run LayoutLMv3 inference on OCR output.
@@ -456,11 +457,8 @@ def run_neural_inference(
                         print(f"[TATR] Failed on page {p_num}: {e}")
 
             # ── Step 1b: Load supervised column boundaries (learned during training) ──
-            # TATR sometimes fails on dense columns (like QUANTITY+U/M). Instead of relying
-            # purely on TATR or heuristics, we load the exact normalized X-boundaries computed
-            # directly from the user's Label Studio annotations!
-            
             supervised_boundaries = None
+            supervised_config = None
             if model_path:
                 bounds_file = os.path.join(model_path, "column_boundaries.json")
                 if os.path.exists(bounds_file):
@@ -468,18 +466,13 @@ def run_neural_inference(
                         with open(bounds_file, "r") as f:
                             bounds_data = json.load(f)
                             if fn in bounds_data:
-                                supervised_boundaries = bounds_data[fn].get("boundaries", [])
-                                print(f"Loaded supervised boundaries for {fn}: {supervised_boundaries}")
+                                supervised_config = bounds_data[fn]
+                                supervised_boundaries = supervised_config.get("boundaries", [])
+                                print(f"Loaded supervised boundaries for {fn}")
                     except Exception as e:
                         print(f"Error loading boundaries: {e}")
-                else:
-                    print(f"No column_boundaries.json found. Please RETRAIN the neural model to apply the new exact-column fix.")
 
             # ── Step 1c: Compute a consistent fallback grid ──
-            # If the user hasn't re-trained the model yet to generate exact boundaries,
-            # we need a fallback. To prevent column scrambling on multi-page docs (e.g. 
-            # Page 2 detects 8 cols, Page 1 detects 7), we'll find the page with the
-            # most TATR columns (usually the header page) and use its grid everywhere.
             fallback_cols = []
             for g in page_grids.values():
                 c = g.get("columns", [])
@@ -488,7 +481,6 @@ def run_neural_inference(
 
             # ── Step 2: Helper functions ──
             def _find_containing_box(center: float, boxes: List[Dict], axis: str) -> int:
-                """Find which box contains the center point. Returns index or nearest."""
                 if not boxes:
                     return 0
                 coord_idx = 0 if axis == "x" else 1
@@ -509,7 +501,6 @@ def run_neural_inference(
                 return best_i
 
             def _map_tatr_col_to_schema(tatr_col_idx: int, tatr_col_count: int, schema_col_count: int) -> int:
-                """Deterministically map a TATR column index to a schema column index."""
                 if tatr_col_count == schema_col_count:
                     return tatr_col_idx
                 if tatr_col_count == 0 or schema_col_count == 0:
@@ -519,6 +510,9 @@ def run_neural_inference(
             # ── Step 3: Assign row_idx and col_idx to each token ──
             global_row_counter = 0
             last_page = None
+
+            table_meta = (field_metadata or {}).get(fn, {})
+            table_mode = table_meta.get("table_mode", "normal")
 
             for tok in ftokens_sorted:
                 p_num = tok["page"]
@@ -530,6 +524,8 @@ def run_neural_inference(
 
                 mid_y = (tok["bbox"][1] + tok["bbox"][3]) / 2.0
                 mid_x = (tok["bbox"][0] + tok["bbox"][2]) / 2.0
+                nx = mid_x / pw
+                tok["nx"] = nx  # Save normalized X for advanced table boundary filtering
 
                 # Assign row using per-page TATR supervised row boxes
                 if tatr_rows:
@@ -546,30 +542,29 @@ def run_neural_inference(
 
                 last_page = p_num
 
-                # Assign column
-                if num_cols > 1:
-                    if supervised_boundaries:  # Best: Use EXACT boundaries learned from Label Studio!
-                        nx = mid_x / pw
-                        col_idx = 0
-                        for b in supervised_boundaries:
-                            if nx > b:
-                                col_idx += 1
-                        tok["col_idx"] = min(col_idx, num_cols - 1)
-                    else:  # Fallback: use consistent page-1 layout to prevent scrambling
-                        best_cols = fallback_cols if fallback_cols else tatr_cols
-                        if best_cols:
-                            best_idx = _find_containing_box(mid_x, best_cols, "x")
-                            tok["col_idx"] = _map_tatr_col_to_schema(best_idx, len(best_cols), num_cols)
+                # Assign column (for normal tables only; advanced uses nx later)
+                if table_mode == "normal":
+                    if num_cols > 1:
+                        if supervised_boundaries: 
+                            col_idx = 0
+                            for b in supervised_boundaries:
+                                if nx > b:
+                                    col_idx += 1
+                            tok["col_idx"] = min(col_idx, num_cols - 1)
                         else:
-                            tok["col_idx"] = 0
-                else:
-                    tok["col_idx"] = 0
+                            best_cols = fallback_cols if fallback_cols else tatr_cols
+                            if best_cols:
+                                best_idx = _find_containing_box(mid_x, best_cols, "x")
+                                tok["col_idx"] = _map_tatr_col_to_schema(best_idx, len(best_cols), num_cols)
+                            else:
+                                tok["col_idx"] = 0
+                    else:
+                        tok["col_idx"] = 0
 
             # ── Step 3b: Fix tokens without TATR row assignment (Y-proximity) ──
-            # This is deterministic proximity grouping, NOT unsupervised ML.
             unassigned = [t for t in ftokens_sorted if t.get("row_idx", -1) == -1]
             if unassigned:
-                row_gap = 10  # points — words within 10pt vertically = same row
+                row_gap = 10  # points
                 current_row_idx = global_row_counter + 1
                 last_y = None
                 for tok in sorted(unassigned, key=lambda t: (t["page"], t["bbox"][1])):
@@ -586,21 +581,54 @@ def run_neural_inference(
                 row_groups[tok.get("row_idx", 0)].append(tok)
 
             value_array = []
-            for row_idx in sorted(row_groups.keys()):
-                row_toks = row_groups[row_idx]
 
-                if num_cols > 1 and expected_cols:
-                    # Build column buckets
-                    col_buckets: Dict[int, List] = {i: [] for i in range(num_cols)}
-                    for t in row_toks:
-                        ci = t.get("col_idx", 0)
-                        ci = min(ci, num_cols - 1)
-                        col_buckets[ci].append(t)
-
+            if table_mode == "advanced":
+                # ── ADVANCED TABLE: Group physical rows into logical records ──
+                rows_per_record = table_meta.get("rows_per_record", 1)
+                col_row_levels = table_meta.get("col_row_levels", {})
+                physical_row_indices = sorted(row_groups.keys())
+                
+                logical_records = [physical_row_indices[i:i + rows_per_record] 
+                                   for i in range(0, len(physical_row_indices), rows_per_record)]
+                
+                for record_rows in logical_records:
                     obj_data = {}
-                    for i, col_name in enumerate(expected_cols):
-                        if col_buckets[i]:
-                            c_toks = sorted(col_buckets[i], key=lambda t: t["bbox"][0])
+                    has_content = False
+                    
+                    for col_name in expected_cols:
+                        sub_row_idx = col_row_levels.get(col_name, 0)
+                        c_toks = []
+                        
+                        if sub_row_idx < len(record_rows):
+                            p_row_idx = record_rows[sub_row_idx]
+                            p_toks = row_groups[p_row_idx]
+                            
+                            if supervised_config and "row_levels" in supervised_config:
+                                rl_config = supervised_config["row_levels"].get(str(sub_row_idx), {})
+                                rl_cols = rl_config.get("columns", [])
+                                rl_bounds = rl_config.get("boundaries", [])
+                                
+                                try:
+                                    local_col_idx = rl_cols.index(col_name)
+                                except ValueError:
+                                    local_col_idx = 0
+                                
+                                # Filter tokens by X boundaries for this specific column in this sub-row
+                                for t in p_toks:
+                                    t_col_idx = 0
+                                    for b in rl_bounds:
+                                        if t["nx"] > b:
+                                            t_col_idx += 1
+                                    
+                                    if t_col_idx == local_col_idx:
+                                        c_toks.append(t)
+                            else:
+                                # Fallback: put everything in the first matching column for the row_level if no bounds
+                                if col_name == next((c for c in expected_cols if col_row_levels.get(c, 0) == sub_row_idx), None):
+                                    c_toks = p_toks
+
+                        if c_toks:
+                            c_toks.sort(key=lambda t: t["bbox"][0])
                             c_text = " ".join(t["text"] for t in c_toks).strip()
                             c_conf = round(float(np.mean([t["confidence"] for t in c_toks])), 3)
                             obj_data[col_name] = {
@@ -608,27 +636,71 @@ def run_neural_inference(
                                 "valueString": c_text,
                                 "confidence": c_conf,
                             }
-
-                    if obj_data:
+                            has_content = True
+                        else:
+                            obj_data[col_name] = {
+                                "type": "string",
+                                "valueString": "",
+                                "confidence": 0.0,
+                            }
+                            
+                    if has_content:
                         value_array.append({
                             "type": "object",
                             "valueObject": obj_data,
                         })
-                else:
-                    # Single-column table or no schema columns defined
-                    row_text = " ".join(t["text"] for t in row_toks).strip()
-                    row_conf = round(float(np.mean([t["confidence"] for t in row_toks])), 3)
-                    if row_text:
-                        value_array.append({
-                            "type": "object",
-                            "valueObject": {
-                                fn: {
+
+            else:
+                # ── NORMAL TABLE: 1 Logical Record = 1 Physical Row ──
+                for row_idx in sorted(row_groups.keys()):
+                    row_toks = row_groups[row_idx]
+
+                    if num_cols > 1 and expected_cols:
+                        col_buckets: Dict[int, List] = {i: [] for i in range(num_cols)}
+                        for t in row_toks:
+                            ci = t.get("col_idx", 0)
+                            ci = min(ci, num_cols - 1)
+                            col_buckets[ci].append(t)
+
+                        obj_data = {}
+                        has_content = False
+                        for i, col_name in enumerate(expected_cols):
+                            if col_buckets[i]:
+                                c_toks = sorted(col_buckets[i], key=lambda t: t["bbox"][0])
+                                c_text = " ".join(t["text"] for t in c_toks).strip()
+                                c_conf = round(float(np.mean([t["confidence"] for t in c_toks])), 3)
+                                obj_data[col_name] = {
                                     "type": "string",
-                                    "valueString": row_text,
-                                    "confidence": row_conf,
+                                    "valueString": c_text,
+                                    "confidence": c_conf,
                                 }
-                            },
-                        })
+                                has_content = True
+                            else:
+                                obj_data[col_name] = {
+                                    "type": "string",
+                                    "valueString": "",
+                                    "confidence": 0.0,
+                                }
+
+                        if has_content:
+                            value_array.append({
+                                "type": "object",
+                                "valueObject": obj_data,
+                            })
+                    else:
+                        row_text = " ".join(t["text"] for t in row_toks).strip()
+                        row_conf = round(float(np.mean([t["confidence"] for t in row_toks])), 3)
+                        if row_text:
+                            value_array.append({
+                                "type": "object",
+                                "valueObject": {
+                                    fn: {
+                                        "type": "string",
+                                        "valueString": row_text,
+                                        "confidence": row_conf,
+                                    }
+                                },
+                            })
 
             results[fn] = {
                 "type": "array",

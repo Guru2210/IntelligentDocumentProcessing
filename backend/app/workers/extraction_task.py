@@ -64,6 +64,17 @@ def execute_extraction(extraction_job_id: str, celery_task_id: Optional[str] = N
                 f.name: [c.column_name for c in sorted(f.columns, key=lambda c: c.order)]
                 for f in fields if f.columns
             },
+            "field_metadata": {
+                f.name: {
+                    "table_mode": getattr(f, 'table_mode', 'normal') or 'normal',
+                    "rows_per_record": getattr(f, 'rows_per_record', 1) or 1,
+                    "col_row_levels": {
+                        c.column_name: (getattr(c, 'row_level', 0) or 0)
+                        for c in sorted(f.columns, key=lambda c: c.order)
+                    },
+                }
+                for f in fields if f.columns and "table" in str(f.field_type).lower()
+            },
         }
 
     try:
@@ -94,6 +105,7 @@ def execute_extraction(extraction_job_id: str, celery_task_id: Optional[str] = N
             field_names=job_info["field_names"],
             field_types=job_info.get("field_types", {}),
             field_columns=job_info.get("field_columns", {}),
+            field_metadata=job_info.get("field_metadata", {}),
             output_format=job_info["output_format"],
         )
         
@@ -191,3 +203,9 @@ class _LazyTask:
         run_in_thread(extraction_job_id)
 
 run_extraction_job = _LazyTask()
+
+# Force task registration if running in Celery worker
+try:
+    run_extraction_job._get_task()
+except Exception:
+    pass

@@ -10,8 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import create_tables
 from app.routers import projects, documents, labels, training, extraction, models, review
+from dotenv import load_dotenv
 
-
+load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: create database tables and MinIO bucket."""
