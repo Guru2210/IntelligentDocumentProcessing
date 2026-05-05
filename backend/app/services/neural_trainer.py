@@ -510,6 +510,7 @@ def run_neural_inference(
             # ── Step 3: Assign row_idx and col_idx to each token ──
             global_row_counter = 0
             last_page = None
+            page_max_row: Dict[int, int] = {}  # track max page_row_idx seen per page
 
             table_meta = (field_metadata or {}).get(fn, {})
             table_mode = table_meta.get("table_mode", "normal")
@@ -530,12 +531,14 @@ def run_neural_inference(
                 # Assign row using per-page TATR supervised row boxes
                 if tatr_rows:
                     page_row_idx = _find_containing_box(mid_y, tatr_rows, "y")
+                    # When switching pages, base global counter on max row used on previous pages
                     if last_page is not None and p_num != last_page:
-                        prev_row_indices = set(
-                            t.get("row_idx", 0) for t in ftokens_sorted
-                            if t["page"] < p_num and "row_idx" in t
+                        prev_max = max(
+                            (page_max_row.get(pg, 0) for pg in page_max_row if pg < p_num),
+                            default=-1
                         )
-                        global_row_counter = max(prev_row_indices) + 1 if prev_row_indices else global_row_counter
+                        global_row_counter = prev_max + 1
+                    page_max_row[p_num] = max(page_max_row.get(p_num, 0), page_row_idx)
                     tok["row_idx"] = global_row_counter + page_row_idx
                 else:
                     tok["row_idx"] = -1
@@ -545,11 +548,9 @@ def run_neural_inference(
                 # Assign column (for normal tables only; advanced uses nx later)
                 if table_mode == "normal":
                     if num_cols > 1:
-                        if supervised_boundaries: 
-                            col_idx = 0
-                            for b in supervised_boundaries:
-                                if nx > b:
-                                    col_idx += 1
+                        if supervised_boundaries:
+                            # Bisect: count how many boundaries the token's X is past
+                            col_idx = sum(1 for b in supervised_boundaries if nx > b)
                             tok["col_idx"] = min(col_idx, num_cols - 1)
                         else:
                             best_cols = fallback_cols if fallback_cols else tatr_cols
