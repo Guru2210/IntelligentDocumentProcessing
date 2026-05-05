@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
-import { 
+import {
   ZoomIn, ZoomOut, Move, Square, Type, Table2, CheckSquare, Pen,
   Plus, Trash2, Save, ChevronLeft, ChevronRight, CheckCircle, AlertCircle,
   X, RotateCcw, Tag, Eye, Pencil
@@ -12,8 +12,8 @@ import {
 } from '../lib/api'
 
 const FIELD_COLORS = [
-  '#3B82F6','#8B5CF6','#10B981','#F59E0B','#EF4444','#F97316',
-  '#06B6D4','#7C3AED','#EC4899','#14B8A6','#84CC16','#F43F5E'
+  '#3B82F6', '#8B5CF6', '#10B981', '#F59E0B', '#EF4444', '#F97316',
+  '#06B6D4', '#7C3AED', '#EC4899', '#14B8A6', '#84CC16', '#F43F5E'
 ]
 
 const FIELD_TYPES = [
@@ -375,15 +375,15 @@ export default function LabelStudio() {
   const [tool, setTool] = useState('select') // select | draw
   const [showAddField, setShowAddField] = useState(false)
   const [editingField, setEditingField] = useState(null) // field object being edited
-  const [continueTable, setContinueTable] = useState(true)
   const [ignoreFirstRow, setIgnoreFirstRow] = useState(true)
   const [labelsHeight, setLabelsHeight] = useState(280)
+  const [fieldPanelWidth, setFieldPanelWidth] = useState(280)
   const [tableCellPending, setTableCellPending] = useState(null) // {wordIds, text, bboxes} — used when cursor is OFF
   const [tableCursor, setTableCursor] = useState(null)           // {fieldId, row, col, overwrite} — auto-advance mode
   const [selectedWords, setSelectedWords] = useState(new Set())
   const [saving, setSaving] = useState(false)
   const [imageLoaded, setImageLoaded] = useState(false)
-  
+
   const [drawingBox, setDrawingBox] = useState(null)
   const [selectionBox, setSelectionBox] = useState(null)  // drag-select rectangle
 
@@ -391,23 +391,24 @@ export default function LabelStudio() {
   const containerRef = useRef(null)
   const isDragging = useRef(false)
   const hasDragged = useRef(false)    // true once mouse moves > threshold after mousedown
+  const dragStart = useRef(null)      // {x, y, tool} — pending drag origin
   const tableCursorRef = useRef(null) // always-current mirror of tableCursor state
   const autoZoomDone = useRef({})
 
   // Load projects
-  useEffect(() => { getProjects().then(setProjects).catch(() => {}) }, [])
+  useEffect(() => { getProjects().then(setProjects).catch(() => { }) }, [])
 
   // Load project details when selected
   useEffect(() => {
     if (!selectedProjectId) return
-    getProject(selectedProjectId).then(setProject).catch(() => {})
-    getDocuments(selectedProjectId).then(setDocuments).catch(() => {})
+    getProject(selectedProjectId).then(setProject).catch(() => { })
+    getDocuments(selectedProjectId).then(setDocuments).catch(() => { })
   }, [selectedProjectId])
 
   // Load document pages
   useEffect(() => {
     if (!selectedProjectId || !selectedDocId) return
-    getDocumentPages(selectedProjectId, selectedDocId).then(setPages).catch(() => {})
+    getDocumentPages(selectedProjectId, selectedDocId).then(setPages).catch(() => { })
     loadAllLabels()
     setCurrentPage(1)
     setImageLoaded(false)
@@ -416,7 +417,7 @@ export default function LabelStudio() {
   // Load words for current page
   useEffect(() => {
     if (!selectedProjectId || !selectedDocId || !pages.length) return
-    getPageWords(selectedProjectId, selectedDocId, currentPage).then(setWords).catch(() => {})
+    getPageWords(selectedProjectId, selectedDocId, currentPage).then(setWords).catch(() => { })
     setSelectedWords(new Set())
     setImageLoaded(false)
   }, [currentPage, selectedDocId, pages.length])
@@ -425,7 +426,7 @@ export default function LabelStudio() {
     try {
       const data = await getLabels(selectedProjectId, selectedDocId)
       setLabels(data)
-    } catch {}
+    } catch { }
   }
 
   const activeField = project?.fields?.find(f => f.id === activeFieldId) || null
@@ -484,150 +485,129 @@ export default function LabelStudio() {
   const handleMouseDown = (e) => {
     if (!activeField) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const startX = e.clientX - rect.left;
+    const startY = e.clientY - rect.top;
 
+    // ── Draw Auto-Table tool ──
     if (tool === 'drawTable' && activeField.field_type === 'table') {
       e.preventDefault();
-      isDragging.current = true;
-      hasDragged.current = false;
-      setDrawingBox({ x0: x, y0: y, x1: x, y1: y });
-    } else if (tool === 'select' && activeField.field_type === 'table') {
-      // Start drag-select for manual multi-word table labeling
-      isDragging.current = true;
-      hasDragged.current = false;
-      setSelectionBox({ x0: x, y0: y, x1: x, y1: y });
-    }
-  }
+      let box = { x0: startX, y0: startY, x1: startX, y1: startY };
+      setDrawingBox(box);
 
-  const handleMouseMove = (e) => {
-    if (!isDragging.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - rect.left, canvasW));
-    const y = Math.max(0, Math.min(e.clientY - rect.top, canvasH));
+      const onMove = (ev) => {
+        const r = canvasRef.current.getBoundingClientRect();
+        box = {
+          x0: startX, y0: startY,
+          x1: Math.max(0, Math.min(ev.clientX - r.left, canvasW)),
+          y1: Math.max(0, Math.min(ev.clientY - r.top, canvasH)),
+        };
+        setDrawingBox({ ...box });
+      };
 
-    if (tool === 'drawTable' && drawingBox) {
-      hasDragged.current = true;
-      setDrawingBox(prev => ({ ...prev, x1: x, y1: y }));
-    } else if (tool === 'select' && selectionBox) {
-      const dx = Math.abs(x - selectionBox.x0);
-      const dy = Math.abs(y - selectionBox.y0);
-      if (dx > 5 || dy > 5) hasDragged.current = true; // Threshold to tell drag from click
-      if (hasDragged.current) setSelectionBox(prev => ({ ...prev, x1: x, y1: y }));
-    }
-  }
+      const onUp = async () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        setDrawingBox(null);
+        const w = Math.abs(box.x1 - box.x0), h = Math.abs(box.y1 - box.y0);
+        if (w <= 10 || h <= 10) return;
 
-  const handleMouseUp = async () => {
-    if (!isDragging.current) return;
-    isDragging.current = false;
-    
-    if (tool === 'drawTable' && drawingBox && activeField) {
-      // Box must be at least 10x10 pixels
-      if (Math.abs(drawingBox.x1 - drawingBox.x0) > 10 && Math.abs(drawingBox.y1 - drawingBox.y0) > 10) {
-        const x0 = fromCanvas(Math.min(drawingBox.x0, drawingBox.x1));
-        const y0 = fromCanvas(Math.min(drawingBox.y0, drawingBox.y1));
-        const x1 = fromCanvas(Math.max(drawingBox.x0, drawingBox.x1));
-        const y1 = fromCanvas(Math.max(drawingBox.y0, drawingBox.y1));
-        
+        const px0 = fromCanvas(Math.min(box.x0, box.x1)), py0 = fromCanvas(Math.min(box.y0, box.y1));
+        const px1 = fromCanvas(Math.max(box.x0, box.x1)), py1 = fromCanvas(Math.max(box.y0, box.y1));
         const loadingToast = toast.loading('Extracting table rows/columns...');
         try {
           const res = await extractTableBbox(selectedProjectId, selectedDocId, {
-            page_number: currentPage,
-            bbox: [x0, y0, x1, y1]
+            page_number: currentPage, bbox: [px0, py0, px1, py1]
           });
-          
           if (res.cells && res.cells.length > 0) {
-            let processedCells = res.cells;
+            let cells = res.cells;
             if (ignoreFirstRow) {
-               processedCells = processedCells
-                 .filter(c => c.row_index > 0)
-                 .map(c => ({ ...c, row_index: c.row_index - 1 }));
+              cells = cells.filter(c => c.row_index > 0).map(c => ({ ...c, row_index: c.row_index - 1 }));
             }
-
             let rowOffset = 0;
-            if (continueTable) {
-               // max row existing
-               const fieldLabels = labels.filter(l => l.field_id === activeField.id && l.row_index != null);
-               if (fieldLabels.length > 0) {
-                 const maxRow = Math.max(...fieldLabels.map(l => l.row_index));
-                 rowOffset = maxRow + 1;
-               }
-            }
-
-            // Map cells to labels
-            let newLabels = processedCells.map(c => {
-               const columns = activeField.columns || [];
-               let colName = `Column${c.column_index + 1}`;
-               if (columns.length > c.column_index) {
-                 colName = columns[c.column_index].column_name;
-               }
-               return {
-                 field_id: activeField.id,
-                 field_name: activeField.name,
-                 page_number: currentPage,
-                 text: c.text,
-                 bounding_boxes: c.bounding_boxes,
-                 word_ids: c.word_ids,
-                 row_index: c.row_index + rowOffset,
-                 column_name: colName,
-               };
+            const existing = labels.filter(l => l.field_id === activeField.id && l.row_index != null);
+            if (existing.length > 0) rowOffset = Math.max(...existing.map(l => l.row_index)) + 1;
+            const newLabels = cells.map(c => {
+              const cols = activeField.columns || [];
+              const colName = cols.length > c.column_index ? cols[c.column_index].column_name : `Column${c.column_index + 1}`;
+              return { field_id: activeField.id, field_name: activeField.name, page_number: currentPage, text: c.text, bounding_boxes: c.bounding_boxes, word_ids: c.word_ids, row_index: c.row_index + rowOffset, column_name: colName };
             }).filter(l => l.word_ids && l.word_ids.length > 0);
-            
             if (newLabels.length > 0) {
-               setLabels(prev => [...prev, ...newLabels]);
-               toast.success(`Extracted ${newLabels.length} table cells`, { id: loadingToast });
-               setTool('select'); // Revert tool
-            } else {
-               toast.error('No words found in the detected table grid', { id: loadingToast });
-            }
-          } else {
-            toast.error('Could not detect table structure in that area', { id: loadingToast });
-          }
-        } catch (err) {
-          toast.error('Failed to extract table structure', { id: loadingToast });
+              setLabels(prev => [...prev, ...newLabels]);
+              toast.success(`Extracted ${newLabels.length} table cells`, { id: loadingToast });
+              setTool('select');
+            } else { toast.error('No words found in detected table grid', { id: loadingToast }); }
+          } else { toast.error('Could not detect table structure in that area', { id: loadingToast }); }
+        } catch { toast.error('Failed to extract table structure', { id: loadingToast }); }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+
+    // ── Select tool (drag-select multi-word) ──
+    } else if (tool === 'select') {
+      let box = null, dragging = false;
+
+      const onMove = (ev) => {
+        const r = canvasRef.current.getBoundingClientRect();
+        const cx = Math.max(0, Math.min(ev.clientX - r.left, canvasW));
+        const cy = Math.max(0, Math.min(ev.clientY - r.top, canvasH));
+        if (!dragging && (Math.abs(cx - startX) > 5 || Math.abs(cy - startY) > 5)) {
+          dragging = true; isDragging.current = true; hasDragged.current = true;
         }
-      }
-      setDrawingBox(null);
-    }
+        if (dragging) { box = { x0: startX, y0: startY, x1: cx, y1: cy }; setSelectionBox({ ...box }); }
+      };
 
-    // ── Drag-select mode: collect words in selection rect ──
-    if (tool === 'select' && selectionBox && activeField?.field_type === 'table') {
-      if (hasDragged.current) {
-        const sx0 = fromCanvas(Math.min(selectionBox.x0, selectionBox.x1));
-        const sy0 = fromCanvas(Math.min(selectionBox.y0, selectionBox.y1));
-        const sx1 = fromCanvas(Math.max(selectionBox.x0, selectionBox.x1));
-        const sy1 = fromCanvas(Math.max(selectionBox.y0, selectionBox.y1));
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        isDragging.current = false;
+        setSelectionBox(null);
+        if (!dragging || !box || !activeField) {
+          hasDragged.current = false; // reset immediately so word onClick fires cleanly
+          return;
+        }
 
-        const captured = words.filter(w => {
-          // Word overlaps selection rectangle
-          return w.x0 < sx1 && w.x1 > sx0 && w.y0 < sy1 && w.y1 > sy0;
-        });
+        const sx0 = fromCanvas(Math.min(box.x0, box.x1)), sy0 = fromCanvas(Math.min(box.y0, box.y1));
+        const sx1 = fromCanvas(Math.max(box.x0, box.x1)), sy1 = fromCanvas(Math.max(box.y0, box.y1));
+        const captured = words.filter(w => w.x0 < sx1 && w.x1 > sx0 && w.y0 < sy1 && w.y1 > sy0)
+          .sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
 
         if (captured.length > 0) {
-          const sorted = captured.sort((a, b) => (a.y0 - b.y0) || (a.x0 - b.x0));
-          const wordIds = sorted.map(w => w.id)
-          const text = sorted.map(w => w.text).join(' ')
-          const bboxes = sorted.map(w => [w.x0, w.y0, w.x1, w.y1])
-          // Route through cursor if active, otherwise show modal
-          if (!assignWithCursor(wordIds, text, bboxes)) {
-            setTableCellPending({ wordIds, text, bboxes })
+          const wordIds = captured.map(w => w.id);
+          const text = captured.map(w => w.text).join(' ');
+          const bboxes = captured.map(w => [w.x0, w.y0, w.x1, w.y1]);
+          if (activeField.field_type === 'table') {
+            if (!tableCursorRef.current) {
+              const nc = { fieldId: activeField.id, row: 0, col: 0, overwrite: false };
+              tableCursorRef.current = nc; setTableCursor(nc);
+            }
+            assignWithCursor(wordIds, text, bboxes);
+          } else {
+            const field = activeField;
+            setLabels(prev => {
+              const filtered = prev.filter(l => !(l.field_id === field.id && l.page_number === currentPage));
+              return [...filtered, { field_id: field.id, field_name: field.name, page_number: currentPage, text, bounding_boxes: bboxes, word_ids: wordIds, row_index: null, column_name: null }];
+            });
+            toast.success(`"${text.substring(0, 20)}${text.length > 20 ? '...' : ''}" → ${field.name}`);
           }
-        } else {
-          toast('No words in selected area', { icon: '⚠️' });
-        }
-      }
-      // Defer resetting hasDragged so the immediate onClick event can still see it
-      setTimeout(() => { hasDragged.current = false }, 50);
-      setSelectionBox(null);
+        } else { toast('No words in selected area', { icon: '⚠️' }); }
+        setTimeout(() => { hasDragged.current = false; }, 50);
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     }
-  }
+  };
+
+  // Noop canvas handlers — real work done in document listeners above
+  const handleMouseMove = () => {};
+  const handleMouseUp = () => {};
 
   // ── assignWithCursor: assign words to cursor position, then auto-advance ──
   // Uses ref so it always sees latest cursor even from memoized callbacks
   const assignWithCursor = (wordIds, text, bboxes) => {
     const cursor = tableCursorRef.current
     if (!cursor || !activeField) return false
-    
+
     // We can just use the globally sorted activeFieldCols here to avoid repeating logic
     // but we need them derived locally to ensure there are no closure scope issues.
     // However, since react renders, `activeField` in scope might be stale if derived from state directly? No, `activeField` is from render. But since this is a callback, it will capture `activeFieldCols`!
@@ -640,7 +620,7 @@ export default function LabelStudio() {
       }
       return a.order - b.order;
     })
-    
+
     if (cols.length === 0) return false
     const colName = cols[cursor.col]?.column_name
     if (!colName) return false
@@ -670,7 +650,7 @@ export default function LabelStudio() {
         const newCursor = { ...cursor, col: nextCol }
         tableCursorRef.current = newCursor
         setTableCursor(newCursor)
-        
+
         const nextRl = cols[nextCol].row_level || 0
         const currRl = cols[cursor.col].row_level || 0
         if (isAdv && nextRl !== currRl) {
@@ -699,16 +679,12 @@ export default function LabelStudio() {
     const wid = word.id
 
     if (activeField.field_type === 'table') {
-      // Read from ref so we always get the current cursor, not a stale closure value
-      if (tableCursorRef.current) {
-        assignWithCursor([wid], word.text, [[word.x0, word.y0, word.x1, word.y1]])
-        return
+      if (!tableCursorRef.current) {
+        const newCursor = { fieldId: activeField.id, row: 0, col: 0, overwrite: false }
+        tableCursorRef.current = newCursor
+        setTableCursor(newCursor)
       }
-      setTableCellPending({
-        wordIds: [wid],
-        text: word.text,
-        bboxes: [[word.x0, word.y0, word.x1, word.y1]],
-      })
+      assignWithCursor([wid], word.text, [[word.x0, word.y0, word.x1, word.y1]])
       return
     }
 
@@ -776,6 +752,26 @@ export default function LabelStudio() {
     setLabels(prev => [...prev, newLabel])
     setTableCellPending(null)
     toast.success(`Cell (R${rowIndex + 1}, ${columnName}) labeled`)
+
+    const isAdv = field.table_mode === 'advanced'
+    const cols = (field.columns || []).slice().sort((a, b) => {
+      if (isAdv) {
+        const rA = a.row_level || 0;
+        const rB = b.row_level || 0;
+        if (rA !== rB) return rA - rB;
+      }
+      return a.order - b.order;
+    })
+
+    const colIdx = cols.findIndex(c => c.column_name === columnName)
+    if (colIdx >= 0) {
+      const nextCol = colIdx + 1
+      if (nextCol < cols.length) {
+        setTableCursor({ fieldId: field.id, row: rowIndex, col: nextCol, overwrite: false })
+      } else {
+        setTableCursor({ fieldId: field.id, row: rowIndex + 1, col: 0, overwrite: false })
+      }
+    }
   }
 
   const handleDeleteLabel = (labelIdx) => {
@@ -841,6 +837,41 @@ export default function LabelStudio() {
     }))
   }
 
+  const handleContinueTable = () => {
+    if (!activeField || activeField.field_type !== 'table') return;
+    
+    const fieldLabels = labels.filter(l => l.field_id === activeField.id && l.row_index != null);
+    let maxRow = -1;
+    if (fieldLabels.length > 0) {
+      maxRow = Math.max(...fieldLabels.map(l => l.row_index));
+    }
+    
+    const nextRow = maxRow + 1;
+    const newCursor = { fieldId: activeField.id, row: nextRow, col: 0, overwrite: false };
+    tableCursorRef.current = newCursor;
+    setTableCursor(newCursor);
+    toast.success(`Table continued at Row ${nextRow + 1}`);
+  };
+
+  const handleDragFieldDivider = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = fieldPanelWidth;
+    const onMouseMove = (moveEvent) => {
+      const deltaX = startX - moveEvent.clientX;
+      // dragging left increases width
+      setFieldPanelWidth(Math.max(200, Math.min(800, startWidth + deltaX)));
+    };
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = 'default';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
   const handleDragDivider = (e) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -881,8 +912,8 @@ export default function LabelStudio() {
           <button className={`btn btn-sm ${tool === 'select' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTool('select')}>
             <Move size={14} /> Select
           </button>
-          <button 
-            className={`btn btn-sm ${tool === 'drawTable' ? 'btn-primary' : 'btn-ghost'}`} 
+          <button
+            className={`btn btn-sm ${tool === 'drawTable' ? 'btn-primary' : 'btn-ghost'}`}
             onClick={() => setTool('drawTable')}
             disabled={!activeField || activeField.field_type !== 'table'}
             title={activeField?.field_type === 'table' ? "Draw box to auto-extract table" : "Select a table field first"}
@@ -927,7 +958,7 @@ export default function LabelStudio() {
       </div>
 
       {/* Main studio area */}
-      <div className="studio-layout" style={{ flex: 1 }}>
+      <div className="studio-layout" style={{ flex: 1, gridTemplateColumns: `200px 1fr ${fieldPanelWidth}px` }}>
         {/* Left: Page thumbnails */}
         <div className="studio-thumbnails">
           {pages.map(pg => (
@@ -962,9 +993,9 @@ export default function LabelStudio() {
             </div>
           ) : (
             <div ref={containerRef} style={{ flex: 1, overflow: 'auto', position: 'relative', padding: 20, display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-              <div 
-                ref={canvasRef} 
-                style={{ position: 'relative', width: canvasW, height: canvasH, flexShrink: 0, cursor: tool === 'drawTable' ? 'crosshair' : 'default' }}
+              <div
+                ref={canvasRef}
+                style={{ position: 'relative', width: canvasW, height: canvasH, flexShrink: 0, cursor: tool === 'drawTable' || activeFieldId ? 'crosshair' : 'default', userSelect: 'none' }}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
@@ -1066,7 +1097,18 @@ export default function LabelStudio() {
         </div>
 
         {/* Right: Field panel */}
-        <div className="studio-field-panel">
+        <div className="studio-field-panel" style={{ position: 'relative' }}>
+          {/* Vertical divider handle */}
+          <div
+            onMouseDown={handleDragFieldDivider}
+            style={{
+              position: 'absolute', left: -4, top: 0, bottom: 0, width: 8,
+              cursor: 'col-resize', zIndex: 50, transition: 'background 0.2s',
+              background: 'transparent'
+            }}
+            onMouseEnter={e => e.target.style.background = 'var(--accent)'}
+            onMouseLeave={e => e.target.style.background = 'transparent'}
+          />
           <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <h4 style={{ fontWeight: 600 }}>Fields</h4>
             <button className="btn btn-primary btn-sm" onClick={() => setShowAddField(true)} disabled={!selectedProjectId}>
@@ -1085,7 +1127,7 @@ export default function LabelStudio() {
                 <div
                   key={field.id}
                   className={`field-item ${activeFieldId === field.id ? 'active' : ''}`}
-                  onClick={() => setActiveFieldId(activeFieldId === field.id ? null : field.id)}
+                  onClick={() => { setActiveFieldId(activeFieldId === field.id ? null : field.id); setTool('select'); }}
                 >
                   <div className="field-color-dot" style={{ background: field.color }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -1107,8 +1149,8 @@ export default function LabelStudio() {
                     >
                       <Pencil size={12} color="var(--text-secondary)" />
                     </button>
-                    <button 
-                      className="btn btn-ghost btn-icon" 
+                    <button
+                      className="btn btn-ghost btn-icon"
                       style={{ width: 22, height: 22, padding: 0 }}
                       onClick={(e) => handleDeleteField(field.id, e)}
                       title="Delete Field"
@@ -1157,7 +1199,15 @@ export default function LabelStudio() {
                   {/* ── Table fields → grid view ── */}
                   {tableFields.map(field => {
                     const fieldLbls = labelsByField[field.id] || []
-                    const colDefs = (field.columns || []).slice().sort((a, b) => a.order - b.order)
+                    const isAdv = field.table_mode === 'advanced'
+                    const colDefs = (field.columns || []).slice().sort((a, b) => {
+                      if (isAdv) {
+                        const rA = a.row_level || 0;
+                        const rB = b.row_level || 0;
+                        if (rA !== rB) return rA - rB;
+                      }
+                      return a.order - b.order;
+                    })
                     const colNames = colDefs.map(c => c.column_name)
 
                     // Build row map: rowIndex → { colName → lbl }
@@ -1213,8 +1263,8 @@ export default function LabelStudio() {
                                         onClick={() => {
                                           const colIdx = colNames.indexOf(cn)
                                           setActiveFieldId(field.id)
-                                          setTableCursor({ fieldId: field.id, row: Number(rowKey), col: colIdx, overwrite: true })
-                                          toast(`Click or drag words → ${cn} [Row ${Number(rowKey)+1}]`, { icon: '✏️', duration: 2000 })
+                                          setTableCursor({ fieldId: field.id, row: Number(rowKey), col: colIdx, overwrite: false })
+                                          toast(`Click or drag words → ${cn} [Row ${Number(rowKey) + 1}]`, { icon: '✏️', duration: 2000 })
                                         }}
                                         style={{
                                           padding: '3px 8px',
@@ -1311,58 +1361,31 @@ export default function LabelStudio() {
                     </div>
                   )}
 
-                  {/* Cursor action buttons */}
-                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                    {!cursorActive ? (
-                      <button
-                        className="btn btn-primary btn-sm"
-                        style={{ fontSize: '0.72rem' }}
-                        onClick={() => setTableCursor({ fieldId: activeField.id, row: 0, col: 0, overwrite: false })}
-                      >
-                        ▶ Start cursor (Row 1)
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ fontSize: '0.72rem' }}
-                          title="Skip this cell without labeling"
-                          onClick={() => {
-                            const nextCol = tableCursor.col + 1
-                            if (nextCol < activeFieldCols.length) setTableCursor(prev => ({ ...prev, col: nextCol }))
-                            else setTableCursor(prev => ({ ...prev, row: prev.row + 1, col: 0 }))
-                          }}
-                        >
-                          Skip →
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          style={{ fontSize: '0.72rem' }}
-                          title="Go back one cell"
-                          onClick={() => {
-                            if (tableCursor.col > 0) setTableCursor(prev => ({ ...prev, col: prev.col - 1 }))
-                            else if (tableCursor.row > 0) setTableCursor(prev => ({ ...prev, row: prev.row - 1, col: activeFieldCols.length - 1 }))
-                          }}
-                        >
-                          ← Back
-                        </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: '0.72rem', color: 'var(--red)' }}
-                          onClick={() => setTableCursor(null)}
-                        >
-                          ✕ Stop
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Auto-table draw options */}
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', paddingTop: 2, borderTop: '1px solid var(--border)' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                      <input type="checkbox" checked={continueTable} onChange={e => setContinueTable(e.target.checked)} />
-                      Continue table
-                    </label>
+                  {/* Auto-table draw options & manual actions */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', paddingTop: 6, marginTop: 4, borderTop: '1px solid var(--border)' }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleContinueTable}
+                      disabled={!activeField || activeField.field_type !== 'table'}
+                      title="Continue table numbering from the last row on previous pages"
+                      style={{ padding: '4px 8px', fontSize: '0.7rem' }}
+                    >
+                      <ChevronRight size={12} /> Continue Table
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => {
+                        tableCursorRef.current = null;
+                        setTableCursor(null);
+                        toast.success("Table labeling finished");
+                      }}
+                      disabled={!tableCursor}
+                      title="Finish labeling and stop the auto-advancing cursor"
+                      style={{ padding: '4px 8px', fontSize: '0.7rem' }}
+                    >
+                      <CheckCircle size={12} /> Done
+                    </button>
+                    <div className="separator-v" style={{ height: 16, margin: '0 4px' }} />
                     <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
                       <input type="checkbox" checked={ignoreFirstRow} onChange={e => setIgnoreFirstRow(e.target.checked)} />
                       Ignore 1st row
